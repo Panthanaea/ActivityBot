@@ -13,6 +13,7 @@ The traffic should be low enough for the free version, but I have not stress tes
 This bot was coded with help from Claude.ai as my Javascript coding skills are rusty AF. If I ever use AI in a build, I will always disclose it as I believe in people having the choice to use or not use something based on AI being used and ***how*** it was used. I spent 4 days debugging the code and deploying it on an Oracle Cloud server, so I have done a lot of heavy lifting as the human behind the build. I don't take code commissions - want to get that out of the way. I'm just not confident enough in my skills for that.
 I hope this bot will help other server owners track inactive users.
 
+## How it works:
 **A member counts as active if they, within the configured time window:**
 - React to a message
 - Post a message
