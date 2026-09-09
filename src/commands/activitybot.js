@@ -2,6 +2,7 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   EmbedBuilder,
+  InteractionContextType,
 } = require('discord.js');
 const {
   getGuildConfig,
@@ -25,6 +26,7 @@ module.exports = {
     .setName('activitybot')
     .setDescription('Configure and manage ActivityBot')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setContexts(InteractionContextType.Guild)
     .addSubcommand((sub) =>
       sub
         .setName('setup')
@@ -92,9 +94,31 @@ module.exports = {
     ),
 
   async execute(interaction) {
+    if (!interaction.inGuild()) {
+      return interaction.reply({
+        content: 'This command only works inside a server, not in DMs.',
+        ephemeral: true,
+      });
+    }
+
     if (!isAdmin(interaction)) {
       return interaction.reply({
         content: 'You need the **Manage Server** permission to use this command.',
+        ephemeral: true,
+      });
+    }
+
+    // interaction.guild relies on the client's guild cache and can occasionally
+    // come back null even inside a real guild (cache gaps, race conditions on
+    // startup, etc). interaction.guildId is always reliable, so fall back to an
+    // explicit API fetch rather than assuming the cache is populated.
+    const guild = interaction.guild ?? (await interaction.client.guilds.fetch(interaction.guildId).catch((err) => {
+      console.error(`[activitybot] Failed to resolve guild ${interaction.guildId}:`, err);
+      return null;
+    }));
+    if (!guild) {
+      return interaction.reply({
+        content: 'Could not load this server\u2019s data right now. Please try again in a moment.',
         ephemeral: true,
       });
     }
@@ -103,43 +127,43 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
 
     if (group === 'exclude') {
-      return handleExclude(interaction, sub);
+      return handleExclude(interaction, guild, sub);
     }
     if (group === 'farewell') {
-      return handleFarewell(interaction, sub);
+      return handleFarewell(interaction, guild, sub);
     }
 
     switch (sub) {
       case 'setup':
-        return handleSetup(interaction);
+        return handleSetup(interaction, guild);
       case 'enable':
-        return handleEnableDisable(interaction, true);
+        return handleEnableDisable(interaction, guild, true);
       case 'disable':
-        return handleEnableDisable(interaction, false);
+        return handleEnableDisable(interaction, guild, false);
       case 'status':
-        return handleStatus(interaction);
+        return handleStatus(interaction, guild);
       case 'sweep':
-        return handleSweep(interaction);
+        return handleSweep(interaction, guild);
       case 'reset':
-        return handleReset(interaction);
+        return handleReset(interaction, guild);
       default:
         return interaction.reply({ content: 'Unknown subcommand.', ephemeral: true });
     }
   },
 };
 
-async function handleSetup(interaction) {
+async function handleSetup(interaction, guild) {
   const role = interaction.options.getRole('role');
   const threshold = interaction.options.getInteger('threshold');
 
-  if (role.managed || role.id === interaction.guild.id) {
+  if (role.managed || role.id === guild.id) {
     return interaction.reply({
       content: 'That role can\u2019t be used (it\u2019s a managed/integration role or @everyone). Pick a normal role.',
       ephemeral: true,
     });
   }
 
-  const botMember = await interaction.guild.members.fetchMe();
+  const botMember = await guild.members.fetchMe();
   if (role.position >= botMember.roles.highest.position) {
     return interaction.reply({
       content:
@@ -149,7 +173,7 @@ async function handleSetup(interaction) {
     });
   }
 
-  const config = setGuildConfig(interaction.guild.id, {
+  const config = setGuildConfig(guild.id, {
     thresholdDays: threshold,
     inactiveRoleId: role.id,
   });
@@ -168,24 +192,24 @@ async function handleSetup(interaction) {
   });
 }
 
-async function handleEnableDisable(interaction, enabled) {
-  const config = getGuildConfig(interaction.guild.id);
+async function handleEnableDisable(interaction, guild, enabled) {
+  const config = getGuildConfig(guild.id);
   if (enabled && !config.inactive_role_id) {
     return interaction.reply({
       content: 'Run `/activitybot setup` first to choose an inactive role and threshold.',
       ephemeral: true,
     });
   }
-  setGuildConfig(interaction.guild.id, { enabled });
+  setGuildConfig(guild.id, { enabled });
   return interaction.reply({
     content: `Inactivity tracking is now **${enabled ? 'enabled' : 'disabled'}** for this server.`,
     ephemeral: true,
   });
 }
 
-async function handleStatus(interaction) {
-  const config = getGuildConfig(interaction.guild.id);
-  const excludedRoles = getExcludedRoles(interaction.guild.id);
+async function handleStatus(interaction, guild) {
+  const config = getGuildConfig(guild.id);
+  const excludedRoles = getExcludedRoles(guild.id);
   const roleMentions = excludedRoles.length
     ? excludedRoles.map((id) => `<@&${id}>`).join(', ')
     : 'None';
@@ -212,27 +236,27 @@ async function handleStatus(interaction) {
   return interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
-async function handleSweep(interaction) {
+async function handleSweep(interaction, guild) {
   await interaction.deferReply({ ephemeral: true });
-  const config = getGuildConfig(interaction.guild.id);
+  const config = getGuildConfig(guild.id);
   if (!config.inactive_role_id) {
     return interaction.editReply('Run `/activitybot setup` first.');
   }
-  const result = await sweepGuild(interaction.guild);
+  const result = await sweepGuild(guild);
   return interaction.editReply(
     `Sweep complete. Tagged **${result.tagged}** member(s) as inactive, ` +
       `reactivated **${result.reactivated}** member(s), skipped **${result.skipped}** excluded/exempt member(s).`
   );
 }
 
-async function handleReset(interaction) {
+async function handleReset(interaction, guild) {
   const user = interaction.options.getUser('user');
-  upsertLastActive(interaction.guild.id, user.id, Date.now());
-  clearInactive(interaction.guild.id, user.id);
+  upsertLastActive(guild.id, user.id, Date.now());
+  clearInactive(guild.id, user.id);
 
-  const config = getGuildConfig(interaction.guild.id);
+  const config = getGuildConfig(guild.id);
   if (config.inactive_role_id) {
-    const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+    const member = await guild.members.fetch(user.id).catch(() => null);
     if (member?.roles.cache.has(config.inactive_role_id)) {
       await member.roles.remove(config.inactive_role_id, 'ActivityBot: manual reset').catch(() => null);
     }
@@ -241,32 +265,32 @@ async function handleReset(interaction) {
   return interaction.reply({ content: `Activity clock reset for ${user}.`, ephemeral: true });
 }
 
-async function handleExclude(interaction, sub) {
+async function handleExclude(interaction, guild, sub) {
   if (sub === 'add') {
     const role = interaction.options.getRole('role');
-    addExcludedRole(interaction.guild.id, role.id);
+    addExcludedRole(guild.id, role.id);
     return interaction.reply({ content: `${role} is now excluded from inactivity tracking.`, ephemeral: true });
   }
   if (sub === 'remove') {
     const role = interaction.options.getRole('role');
-    removeExcludedRole(interaction.guild.id, role.id);
+    removeExcludedRole(guild.id, role.id);
     return interaction.reply({ content: `${role} is no longer excluded.`, ephemeral: true });
   }
   if (sub === 'list') {
-    const excludedRoles = getExcludedRoles(interaction.guild.id);
+    const excludedRoles = getExcludedRoles(guild.id);
     const roleMentions = excludedRoles.length ? excludedRoles.map((id) => `<@&${id}>`).join(', ') : 'None';
     return interaction.reply({ content: `Excluded roles: ${roleMentions}`, ephemeral: true });
   }
 }
 
-async function handleFarewell(interaction, sub) {
+async function handleFarewell(interaction, guild, sub) {
   if (sub === 'set') {
     const message = interaction.options.getString('message');
-    setGuildConfig(interaction.guild.id, { farewellMessage: message });
+    setGuildConfig(guild.id, { farewellMessage: message });
     const preview = buildFarewellMessage({
       template: message,
       username: interaction.user.username,
-      guildName: interaction.guild.name,
+      guildName: guild.name,
     });
     return interaction.reply({
       content: `Farewell DM updated. Preview:\n> ${preview}`,
@@ -274,18 +298,18 @@ async function handleFarewell(interaction, sub) {
     });
   }
   if (sub === 'clear') {
-    setGuildConfig(interaction.guild.id, { farewellMessage: null });
+    setGuildConfig(guild.id, { farewellMessage: null });
     return interaction.reply({
       content: `Farewell DM reset to the default:\n> ${DEFAULT_FAREWELL_MESSAGE}`,
       ephemeral: true,
     });
   }
   if (sub === 'show') {
-    const config = getGuildConfig(interaction.guild.id);
+    const config = getGuildConfig(guild.id);
     const preview = buildFarewellMessage({
       template: config.farewell_message,
       username: interaction.user.username,
-      guildName: interaction.guild.name,
+      guildName: guild.name,
     });
     return interaction.reply({
       content:
