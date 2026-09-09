@@ -1,0 +1,21 @@
+{
+  "name": "activitybot",
+  "version": "1.0.0",
+  "description": "Discord bot that tags inactive members with a role and prunes long-term-inactive members.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy-commands": "node src/deploy-commands.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  },
+  "license": "MIT"
+}
